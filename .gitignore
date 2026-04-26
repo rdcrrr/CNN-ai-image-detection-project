@@ -34,7 +34,7 @@ images/
 loadSets/
 
 # Trained model files — too large for git
-CNN/saved_modules/
+
 
 # Temporary / generated files
 graphs/
