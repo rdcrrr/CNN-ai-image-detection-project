@@ -42,3 +42,22 @@ graphs/
 
 .venv/
 .venv1/
+
+
+Orginize_dataSet.py
+Reset_data.py
+add_diverse.py
+add_face_data.py
+add_training_data.py
+reorganize_training_data.py
+sanity_check.py
+eval_module.py
+project_graphs.py
+
+CNN/saved_modules/*.pth
+!CNN/saved_modules/prnu_general_v2.pth
+!CNN/saved_modules/ela_general_v2.pth
+!CNN/saved_modules/freq_general_v2.pth
+!CNN/saved_modules/prnu_faces_v2.pth
+!CNN/saved_modules/ela_faces_v2.pth
+!CNN/saved_modules/freq_faces_v2.pth
