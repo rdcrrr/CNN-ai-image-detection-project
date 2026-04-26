@@ -1,0 +1,44 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+.venv/
+.venv1/
+
+# IDE files
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# All image data — training, test, downloaded datasets
+images/
+loadSets/
+
+# Trained model files — too large for git
+CNN/saved_modules/
+
+# Temporary / generated files
+graphs/
+*.zip
+
+.venv/
+.venv1/
