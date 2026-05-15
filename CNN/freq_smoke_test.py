@@ -1,6 +1,6 @@
 """
 freq_smoke_test.py
-------------------
+
 Verifies that the frequency tensor pipeline works correctly
 before plugging it into CNN training.
 
@@ -14,9 +14,9 @@ from pathlib import Path
 import torch
 import numpy as np
 
-# -----------------------------------------------------------------------------
+
 # 1. Import test
-# -----------------------------------------------------------------------------
+
 print("=" * 55)
 print("  Frequency Tensor Pipeline Smoke Test")
 print("=" * 55)
@@ -29,9 +29,9 @@ except ImportError as e:
     print("       Make sure frequency_extractor.py is inside CNN/feature_extract/")
     sys.exit(1)
 
-# -----------------------------------------------------------------------------
+
 # 2. Find a test image — search recursively with next() for speed
-# -----------------------------------------------------------------------------
+
 SEARCH_DIRS = [
     Path(r"C:\Users\rdc20\PycharmProjects\imageMetadata\images\real_imagesLarge"),
     Path(r"C:\Users\rdc20\PycharmProjects\imageMetadata\images\aiImagesLarge"),
@@ -57,9 +57,9 @@ if test_image is None:
 
 print(f"[OK] Using test image: {test_image}")
 
-# -----------------------------------------------------------------------------
+
 # 3. Build tensor and run checks
-# -----------------------------------------------------------------------------
+
 try:
     tensor, radial = build_frequency_tensor(str(test_image))
 except Exception as e:
@@ -108,9 +108,9 @@ if radial.min() >= 0 and radial.max() <= 1.0:
 else:
     print(f"  [WARN] Values outside [0, 1] range")
 
-# -----------------------------------------------------------------------------
+
 # 4. Batch simulation — simulate what the DataLoader will do
-# -----------------------------------------------------------------------------
+
 print(f"\n--- Batch simulation ---")
 try:
     batch = torch.stack([tensor, tensor, tensor, tensor])  # fake batch of 4
@@ -118,9 +118,8 @@ try:
 except Exception as e:
     print(f"[FAIL] Could not stack into batch: {e}")
 
-# -----------------------------------------------------------------------------
+
 # 5. Summary
-# -----------------------------------------------------------------------------
 print(f"\n{'=' * 55}")
 print("  Smoke test complete — ready for CNN training")
 print(f"{'=' * 55}\n")
