@@ -486,6 +486,33 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
+def moving_conv2d(input, weights, padding=1):
+    # input shape:   (in_channels, H, W)
+    # weights shape: (out_channels, in_channels, 3, 3)
+
+    in_channels, H, W = input.shape
+    out_channels = weights.shape[0]
+
+    # Add padding border of zeros around the input
+    padded = np.pad(input,
+                    ((0, 0), (padding, padding), (padding, padding)),
+                    mode='constant')
+
+    # Output map will be same spatial size due to padding
+    output = np.zeros((out_channels, H, W))
+
+    # For each filter
+    for f in range(out_channels):
+        # Slide across every row
+        for i in range(H):
+            # Slide across every column THIS is what moves the filter
+            for j in range(W):
+                # Extract 3x3 patch across all input channels
+                patch = padded[:, i:i + 3, j:j + 3]  # (in_channels, 3, 3)
+                # Apply weights -- dot product across entire patch
+                output[f, i, j] = np.sum(patch * weights[f])
+
+    return output
 def train_one_epoch(model, loader, criterion, optimizer, device):
     """
     adamw basicly = new weight = old weight - (learning rate * gradient)
@@ -533,6 +560,70 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
 
     return total_loss / total, correct / total # calculates acuracy based on the loss
 
+
+import numpy as np
+
+
+def bce_with_logits_loss(logits, labels, pos_weight=1.0):
+    """
+    bce: binary cross entropy loss
+
+    logits: Array of raw model outputs (before sigmoid activation)
+    labels: Array of ground-truth targets (0 for Real, 1 for AI-generated)
+    pos_weight: Scalar weight scaling the loss of positive (AI) samples
+    """
+    # Step 1: Apply Sigmoid to turn raw logits into probabilities between 0 and 1
+    # formula: 1 / (1 + e^-x)
+    probs = 1.0 / (1.0 + np.exp(-logits))
+
+    # Clip probabilities slightly to prevent log(0) which results in NaN errors
+    probs = np.clip(probs, 1e-15, 1.0 - 1e-15)
+
+    # Step 2: Calculate the loss for each individual sample
+    # Regular BCE formula: - [y * log(p) + (1 - y) * log(1 - p)]
+    # Here, we introduce 'pos_weight' multiplying the positive class part (y=1)
+    loss_elements = - (pos_weight * labels * np.log(probs) + (1.0 - labels) * np.log(1.0 - probs))
+
+    # Step 3: Average the losses across the entire batch to get a single scalar
+    mean_loss = np.mean(loss_elements)
+
+    return mean_loss
+
+
+# --- PRESENTATION EXAMPLE DATA ---
+# Let's say we have a batch size of 3
+sample_logits = np.array([2.5, -1.2, 0.1])  # Raw network guesses
+sample_labels = np.array([1.0, 0.0, 1.0])  # Truth: AI, Real, AI
+weight = 1.45  # If real samples outnumber AI samples
+
+loss_val = bce_with_logits_loss(sample_logits, sample_labels, pos_weight=weight)
+
+
+def logic_maxpool2d(input_tensor, pool_size=2, stride=2):
+    """
+    Simulates nn.MaxPool2d(2, 2)
+    input_tensor shape: (channels, H, W)
+    """
+    C, H, W = input_tensor.shape
+    out_H = H // stride
+    out_W = W // stride
+
+    output = np.zeros((C, out_H, out_W))
+
+    for c in range(C):
+        for i in range(out_H):
+            for j in range(out_W):
+                # Calculate the slicing window boundaries
+                r_start = i * stride
+                r_end = r_start + pool_size
+                c_start = j * stride
+                c_end = c_start + pool_size
+
+                # Extract the patch and find the maximum activation value
+                patch = input_tensor[c, r_start:r_end, c_start:c_end]
+                output[c, i, j] = np.max(patch)
+
+    return output
 
 @torch.no_grad() # Tells pytourch not to track operations for gradient calculations
 # we do not need to improve the model here so no need to track it
