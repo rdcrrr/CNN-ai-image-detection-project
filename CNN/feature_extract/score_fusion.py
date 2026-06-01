@@ -1,22 +1,20 @@
 """
-score_fusion
+score_fusion.py
 
-Combines the four module scores into a final verdict.
-Supports two image types: "general" and "face", each with
-different weights reflecting model performance on that type.
-
-
+Combines the four module scores (PRNU, ELA, Freq, Metadata) into a final verdict.
+Supports two image types: "general" and "face", each with different weights
+reflecting model performance on that image category.
 """
 
 from __future__ import annotations
 
+# Module weights per image type
 
-# Two different weights for the two module groups
 WEIGHTS_GENERAL = {
-    "prnu":     0.45,   # strongest on general images
-    "ela":      0.10,   # weakest on general images
-    "freq":     0.35,   # strong on general images
-    "metadata": 0.10,
+    "prnu":     0.45,
+    "ela":      0.25,
+    "freq":     0.25,
+    "metadata": 0.05,
 }
 
 WEIGHTS_FACE = {
@@ -26,8 +24,11 @@ WEIGHTS_FACE = {
     "metadata": 0.10,
 }
 
-THRESHOLD = 0.50
+# Score at which the verdict switches from Real to AI-Generated
+DECISION_THRESHOLD = 0.50
 
+# Fraction of metadata weight to redistribute when PNG format reduces its reliability
+PNG_METADATA_WEIGHT_REDUCTION = 0.5
 
 
 def fuse_scores(
@@ -37,10 +38,13 @@ def fuse_scores(
     metadata_score:  float,
     metadata_format: str = "JPEG",
     metadata_reason: str = "",
-    image_type:      str = "general",   # "general" or "face"
+    image_type:      str = "general",
 ) -> dict:
     """
     Combines all module scores into a final verdict.
+
+    If any CNN module failed (score is None), its weight is redistributed
+    proportionally across the remaining active modules.
     """
     scores = {
         "prnu":     prnu_score,
@@ -49,24 +53,22 @@ def fuse_scores(
         "metadata": metadata_score,
     }
 
-    # Select correct weight set based on image type
-    if image_type == "face":
-        weights = dict(WEIGHTS_FACE)
-    else:
-        weights = dict(WEIGHTS_GENERAL)
+    # Select the weight set for this image type
+    weights = dict(WEIGHTS_FACE if image_type == "face" else WEIGHTS_GENERAL)
 
-    # Reduce metadata weight for PNG
+    # Reduce metadata weight for PNG images unless a strong AI signal is present.
+    # PNG does not embed EXIF the same way as JPEG, making the metadata check unreliable.
     if (metadata_format == "PNG"
             and "ai tool" not in metadata_reason.lower()
             and "suspicious" not in metadata_reason.lower()):
-        freed = weights["metadata"] * 0.5
+        freed = weights["metadata"] * PNG_METADATA_WEIGHT_REDUCTION
         weights["metadata"] -= freed
         for k in ("prnu", "ela", "freq"):
             weights[k] += freed / 3.0
 
-    # Redistribute weight from any failed CNN modules
-    missing = [k for k in ("prnu", "ela", "freq") if scores[k] is None]
-    active  = [k for k in scores if scores[k] is not None]
+    # Redistribute weight from failed CNN modules to the remaining active ones
+    missing      = [k for k in ("prnu", "ela", "freq") if scores[k] is None]
+    active       = [k for k in scores if scores[k] is not None]
 
     if not active:
         return {
@@ -85,11 +87,11 @@ def fuse_scores(
         for k in missing:
             weights[k] = 0.0
 
-    # Normalise weights to sum to 1.0
-    total = sum(weights.values())
+    # Normalize so weights always sum to 1.0
+    total   = sum(weights.values())
     weights = {k: v / total for k, v in weights.items()}
 
-    # Weighted average
+    # Weighted average of all active scores
     final_score = sum(
         scores[k] * weights[k]
         for k in scores
@@ -97,8 +99,8 @@ def fuse_scores(
     )
     final_score = round(float(final_score), 4)
 
-    verdict    = "AI-Generated" if final_score >= THRESHOLD else "Real"
-    distance   = abs(final_score - THRESHOLD)
+    verdict    = "AI-Generated" if final_score >= DECISION_THRESHOLD else "Real"
+    distance   = abs(final_score - DECISION_THRESHOLD)
     confidence = round(50.0 + distance * 100.0, 1)
 
     return {

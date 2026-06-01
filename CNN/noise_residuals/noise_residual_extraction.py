@@ -1,12 +1,14 @@
 """
-PRNU  (Photo Response Non-Uniformity) extraction
+noise_residual_extraction.py
 
+PRNU (Photo Response Non-Uniformity) extraction.
 
-
-
-PRNU patterns are small imprefections that are caused by camera sensors. ai image do not have these imperfections thus we can detect them
+Concept:
+    Camera sensors have tiny manufacturing imperfections that create a unique
+    noise pattern in every photo. This pattern is called the PRNU fingerprint.
+    AI-generated images do not go through a real camera sensor, so they lack
+    this fingerprint. Detecting its absence is a strong signal of AI generation.
 """
-
 
 import cv2
 import numpy as np
@@ -14,29 +16,52 @@ import matplotlib.pyplot as plt
 import pywt
 from scipy.signal import wiener
 
-TARGET_SIZE = (224, 224)
+# Input image dimensions (must match the CNN pipeline)
+IMAGE_HEIGHT = 224
+IMAGE_WIDTH  = 224
+TARGET_SIZE  = (IMAGE_HEIGHT, IMAGE_WIDTH)
+
+# Wavelet decomposition settings
+WAVELET_TYPE   = 'db8'   # Daubechies 8 wavelet
+WAVELET_LEVELS = 3       # number of decomposition levels
+
+# Wiener filter window sizes
+DETAIL_WIENER_SIZE = (3, 3)   # applied to each high-frequency band
+PRNU_WIENER_SIZE   = (5, 5)   # applied to the final PRNU map
+
+# Gaussian blur kernel for removing residual low-frequency content from PRNU
+GAUSSIAN_KERNEL_SIZE = (9, 9)
+
+# Clipping range to remove extreme outlier values before/after Wiener filtering
+WIENER_CLIP_MIN = -1e4
+WIENER_CLIP_MAX =  1e4
+
+# Tiny noise floor added to prevent Wiener filter's local variance from being exactly zero
+WIENER_NOISE_STD = 1e-6
+
+# Small constant to prevent division by zero during PRNU normalization
+PRNU_NORM_EPSILON = 1e-8
+
+# Small constant to prevent division by zero during channel normalization
+CHANNEL_NORM_EPSILON = 1e-8
 
 
-#separates signal from noise by looking at local variance
 def _stable_wiener(arr: np.ndarray, size: tuple) -> np.ndarray:
     """
-    Wrapper around scipy wiener that prevents divide-by-zero.
-    Adds a tiny noise floor to ensure local variance is never exactly zero.
-    Also clips extreme outliers before and after filtering.
+    Wrapper around scipys Wiener filter that prevents divide by zero errors.
+    Adds a tiny noise floor so local variance is never exactly zero,
+    and clips extreme values before and after filtering.
+
+    This filter works by first, looking for a local variance (how much do neighboring pixels vary from each other?)
+    then applies smoothing to the area
+    if the area is flat it could result in a zero
     """
-    # Clip extreme values before filtering
-    arr = np.clip(arr, -1e4, 1e4)
-
-    # Add tiny noise floor so local variance is never zero
-    noise_floor = np.random.default_rng(seed=0).normal(
-        0, 1e-6, arr.shape
-    ).astype(np.float32)
+    arr  = np.clip(arr, WIENER_CLIP_MIN, WIENER_CLIP_MAX) # Limit the values to a certain threshold
+    noise_floor = np.random.default_rng(seed=0).normal(0, WIENER_NOISE_STD, arr.shape,).astype(np.float32) # Adds a tiny random amount of noise
+    # this is the wrapper that prevents divide by zero
     arr_stable = arr + noise_floor
-
-    filtered = wiener(arr_stable, size)
-
-    # Clip again after filtering to remove any remaining outliers
-    filtered = np.clip(filtered, -1e4, 1e4)
+    filtered   = wiener(arr_stable, size)
+    filtered   = np.clip(filtered, WIENER_CLIP_MIN, WIENER_CLIP_MAX) # Limit extreme values again
     return filtered.astype(np.float32)
 
 
@@ -44,62 +69,61 @@ def extract_prnu_residual(img_gray: np.ndarray) -> np.ndarray:
     """
     Extracts the PRNU noise residual from a grayscale image.
 
-    img_gray - float32 grayscale array, already resized to TARGET_SIZE
-    returns  : PRNU map, same spatial size, float32
+    img_gray: float32 grayscale array already resized to TARGET_SIZE
+    returns: PRNU map of the same spatial size, float32
+
+    Steps:
+        1 Wavelet decomposition (WAVELET_LEVELS levels of WAVELET_TYPE)
+        2 Wiener filter on high frequency bands to denoise while preserving structure (to smooth out random noise)
+        3 Reconstruct the denoised image
+        4 Compute residual = original - denoised, normalized by local intensity
+        5 Post-process: remove mean, apply full-map Wiener filter, remove
+           residual low-frequency content with a Gaussian blur subtraction
     """
+    # Wavelet decomposition splits the image into low-frequency (approximation)
+    # and high-frequency (detail) components across WAVELET_LEVELS levels
+    # Wavelet works by applying filters to the image, that make the noise "pop"
+    # Uses db8, a smooth shape that represents gradual intensity, clearly separates image content from high frequency noise
+    coeffs = pywt.wavedec2(img_gray, WAVELET_TYPE, level=WAVELET_LEVELS) # do this 3 times (levels = the amount of times you peel image layers away)
 
-    #Applies a 2D wavelet decomposition using 6 db
-    #this transformation decomposes the image to low frequency components and high
-    #using 3 levels (doing the decomposition 3 times)
-    wavelet, levels = 'db8', 3
-    coeffs = pywt.wavedec2(img_gray, wavelet, level=levels)
+    # coeffs[0] is the low-frequency base (sort of a blurry version of the image), coeffs[1], [2], [3] are the high frequency detail layers.
 
-
-    # Applies wiener filter to high frequency bands
-    # we do this to denise the detail components while preserving the structure
-    denoised_coeffs = [coeffs[0]]
+    # Apply Wiener filter to each high frequency band to remove image content
+    # while preserving the faint sensor noise pattern
+    denoised_coeffs = [coeffs[0]]   # keep the low-frequency approximation unchanged
     for detail_level in coeffs[1:]:
-        denoised_detail = []
-        for band in detail_level:
-            denoised_detail.append(_stable_wiener(band, (3, 3)))
+        denoised_detail = [_stable_wiener(band, DETAIL_WIENER_SIZE) for band in detail_level]
         denoised_coeffs.append(tuple(denoised_detail))
 
-    # Reconstructs the denoised image
-    # (crop needed because of unstable output)
-    denoised = pywt.waverec2(denoised_coeffs, wavelet)
+
+    # Reconstruct the denoised image (crop removes boundary artifacts from wavelet reconstruction) for later subtraction
+
+    # prevents the output from being one pixel too large
+    denoised = pywt.waverec2(denoised_coeffs, WAVELET_TYPE)
     denoised = denoised[:img_gray.shape[0], :img_gray.shape[1]]
 
-    # Compute residual and normalize by local image intensity
-    # we do this by subtracting the denoised image from the orignal and then divided by the image intesnity(im_gray + esp to remove brightness on the noise pattern)
-    #(denoised simpyly means the image without unwanted noise)
+    # Residual normalized by local image intensity to remove brightness dependent noise
+    # subtracting the diagnosed image from the original leaving us mostly with PRNU
     residual = img_gray - denoised
-    eps      = 1e-8
+    prnu     = residual / (img_gray + PRNU_NORM_EPSILON) # divide to normalize the noise
 
-    # Clean up
-    # 1 remove the mean (subtracting the avrage from every pixle)
-    prnu     = residual / (img_gray + eps)
-    prnu    -= prnu.mean()
-    # 2 apply another winer filter to the full prnu map
-    prnu = _stable_wiener(prnu, (5, 5))
-    # 3 subtract a gaussian blur of itself to remove and remaining low frequency content that leaked
-    #gaussian blur avrages every pixle with its neighbors 9used to remove high frequency information)
-    prnu -= cv2.GaussianBlur(prnu, (9, 9), 0)
-
+    # Post-processing: remove mean, apply Wiener filter, remove residual low frequencies
+    prnu -= prnu.mean() # Center the pattern to around zero, this removes positive / negative biases from diagnoses
+    # preventing positive or negative biases accurately shows in what region contains what amount of noise
+    prnu  = _stable_wiener(prnu, PRNU_WIENER_SIZE) # Reduces any remaining data other then the PRNU residuals
+    prnu -= cv2.GaussianBlur(prnu, GAUSSIAN_KERNEL_SIZE, 0) # Remove any low frequency content that leaked into the PRNU map
+    # Gaussian blur averages each pixel with its neighbours, helps capture the low frequency content
     return prnu.astype(np.float32)
 
 
 def normalize_channel(ch: np.ndarray) -> np.ndarray:
-    """Zero-mean, unit-std normalization for a single channel. step to prepare for CNN"""
-    return (ch - ch.mean()) / (ch.std() + 1e-8)
-    # 1e - 8 used to prevent divistion by zero
+    """Zero-mean, unit-std normalization for a single channel Prepares data for the CNN."""
+    return (ch - ch.mean()) / (ch.std() + CHANNEL_NORM_EPSILON) # CHANNEL_NORM_EPSILON prevents divide by zero
 
-
-
-
-# Standalone visualization (only use for visual not the actual CNN)
 
 if __name__ == "__main__":
     from pathlib import Path
+
     PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     default_path = PROJECT_ROOT / "images" / "testReal" / "real" / "real_1.jpg"
 
@@ -109,16 +133,14 @@ if __name__ == "__main__":
 
     img = img.astype(np.float32)
     H, W = TARGET_SIZE
-    img = cv2.resize(img, (W, H))
+    img  = cv2.resize(img, (W, H))
 
-    prnu     = extract_prnu_residual(img)
-    residual = img - cv2.GaussianBlur(img, (9, 9), 0)
-
+    prnu      = extract_prnu_residual(img)
+    residual  = img - cv2.GaussianBlur(img, GAUSSIAN_KERNEL_SIZE, 0)
     fft       = np.fft.fftshift(np.fft.fft2(prnu))
     magnitude = np.log(np.abs(fft) + 1)
 
     plt.figure(figsize=(15, 5))
-
     plt.subplot(1, 3, 1)
     plt.title("PRNU Estimate")
     plt.imshow(prnu, cmap='gray')
